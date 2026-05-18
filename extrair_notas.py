@@ -355,7 +355,8 @@ def save_to_excel(notas_por_mes, ano, output_path):
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    resources_dir = r"c:\Repo\Planilha Acoes\resources"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    resources_dir = os.path.join(script_dir, "resources")
 
     # Processa todos os PDFs disponíveis
     files_to_process = sorted(f for f in os.listdir(resources_dir) if f.endswith('.pdf'))
@@ -368,7 +369,7 @@ def main():
         pdf_path = os.path.join(resources_dir, filename)
         print(f"Processando: {filename}")
         notas = process_pdf(pdf_path)
-        print(f"  → {len(notas)} notas extraídas")
+        print(f"  -> {len(notas)} notas extraidas")
 
         for nota in notas:
             # Extrai mês/ano da data pregão (formato dd/mm/yyyy)
@@ -377,7 +378,7 @@ def main():
                 mes = int(partes[1])
                 ano = int(partes[2])
             except (IndexError, ValueError, AttributeError):
-                print(f"  ⚠ Data inválida em nota {nota.get('Nr. Nota')}: {nota.get('Data Pregão')}")
+                print(f"  [AVISO] Data invalida em nota {nota.get('Nr. Nota')}: {nota.get('Data Pregão')}")
                 continue
 
             notas_por_mes[(ano, mes)].append(nota)
@@ -389,7 +390,7 @@ def main():
 
     # Gera uma planilha por ano encontrado
     for ano in sorted(anos):
-        output_path = os.path.join(r"c:\Repo\Planilha Acoes", f"notas_corretagem_{ano}.xlsx")
+        output_path = os.path.join(script_dir, f"notas_corretagem_{ano}.xlsx")
         save_to_excel(notas_por_mes, ano, output_path)
 
 
