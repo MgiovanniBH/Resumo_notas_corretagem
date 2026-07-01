@@ -1,3 +1,9 @@
 *.xlsx
 resources/
 .venv/
+
+# PDF files
+*.pdf
+
+__pycache__/
+*.pyc
