@@ -22,6 +22,8 @@ MESES_PT = {
     9: 'Setembro',10: 'Outubro',  11: 'Novembro', 12: 'Dezembro',
 }
 
+MONTH_TO_NUM = {v: k for k, v in MESES_PT.items()}
+
 # ── Colunas exibidas na planilha ─────────────────────────────────────────────
 COLUMNS = [
     'Nr. Nota',
@@ -53,6 +55,31 @@ def parse_float(val_str):
         return float(val_str)
     except ValueError:
         return 0.0
+
+
+def find_total_row(ws):
+    """Encontra a linha contendo 'TOTAL' na coluna A de uma planilha de mês."""
+    for row in range(1, ws.max_row + 1):
+        if ws.cell(row=row, column=1).value == 'TOTAL':
+            return row
+    return ws.max_row
+
+
+def get_pdf_month_year(pdf_path):
+    """Abre o PDF e tenta identificar o ano e mês a partir da primeira nota encontrada."""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            _, data_pregao = extract_header(text)
+            if data_pregao:
+                try:
+                    partes = data_pregao.split('/')
+                    mes = int(partes[1])
+                    ano = int(partes[2])
+                    return ano, mes
+                except (IndexError, ValueError):
+                    pass
+    return None
 
 
 def extract_values_row(line):
@@ -327,26 +354,57 @@ def write_annual_sheet(ws, month_sheets, st):
 def save_to_excel(notas_por_mes, ano, output_path):
     """
     notas_por_mes: dict { (ano, mes): [lista de notas] }
-    Cria uma aba por mês + aba de totais anuais.
+    Cria ou atualiza a planilha anual com uma aba por mês + aba de totais anuais.
     """
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)   # remove planilha padrão vazia
+    if os.path.exists(output_path):
+        try:
+            wb = openpyxl.load_workbook(output_path)
+        except Exception as e:
+            print(f"Erro ao carregar planilha existente: {e}. Criando uma nova.")
+            wb = openpyxl.Workbook()
+            wb.remove(wb.active)
+    else:
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
     st = make_styles()
 
-    month_sheets = []   # (sheet_name, ws, total_row)
-
-    # Ordena meses cronologicamente
+    # 1. Cria novas abas de meses que foram de fato processados
     for (y, m) in sorted(notas_por_mes.keys()):
         if y != ano:
             continue
         sheet_name = MESES_PT.get(m, f"Mês {m:02d}")
-        ws = wb.create_sheet(title=sheet_name)
-        total_row = write_sheet(ws, notas_por_mes[(y, m)], st)
-        month_sheets.append((sheet_name, ws, total_row))
+        
+        # Só cria e escreve se a aba não existir
+        if sheet_name not in wb.sheetnames:
+            ws = wb.create_sheet(title=sheet_name)
+            write_sheet(ws, notas_por_mes[(y, m)], st)
+            print(f"  -> Aba criada: {sheet_name}")
+        else:
+            print(f"  -> Aba mantida (já existia): {sheet_name}")
 
-    # Aba de totais anuais
-    ws_annual = wb.create_sheet(title=f"TOTAL {ano}")
+    # 2. Coleta todas as abas de meses presentes para reconstruir a aba TOTAL
+    month_sheets = []   # (sheet_name, ws, total_row)
+    for name in wb.sheetnames:
+        if name != f"TOTAL {ano}":
+            ws = wb[name]
+            total_row = find_total_row(ws)
+            month_sheets.append((name, ws, total_row))
+
+    # Ordena cronologicamente
+    month_sheets.sort(key=lambda x: MONTH_TO_NUM.get(x[0], 99))
+
+    # 3. Recria a aba de totais anuais
+    annual_sheet_name = f"TOTAL {ano}"
+    if annual_sheet_name in wb.sheetnames:
+        wb.remove(wb[annual_sheet_name])
+
+    ws_annual = wb.create_sheet(title=annual_sheet_name)
     write_annual_sheet(ws_annual, month_sheets, st)
+
+    # 4. Ordena a ordem das abas na planilha
+    sorted_titles = [item[0] for item in month_sheets] + [annual_sheet_name]
+    wb._sheets = [wb[t] for t in sorted_titles if t in wb.sheetnames]
 
     wb.save(output_path)
     print(f"Planilha salva em: {output_path}")
@@ -367,6 +425,26 @@ def main():
 
     for filename in files_to_process:
         pdf_path = os.path.join(resources_dir, filename)
+        
+        # Tenta identificar o ano e mês antes de ler todo o PDF
+        info = get_pdf_month_year(pdf_path)
+        if info:
+            ano, mes = info
+            sheet_name = MESES_PT.get(mes, f"Mês {mes:02d}")
+            output_path = os.path.join(script_dir, f"notas_corretagem_{ano}.xlsx")
+            if os.path.exists(output_path):
+                try:
+                    wb_temp = openpyxl.load_workbook(output_path, read_only=True)
+                    if sheet_name in wb_temp.sheetnames:
+                        print(f"PULADO: {filename} ({sheet_name}/{ano} já está apurado na planilha)")
+                        anos.add(ano)
+                        wb_temp.close()
+                        continue
+                    wb_temp.close()
+                except Exception as e:
+                    print(f"  [AVISO] Erro ao verificar planilha existente para {filename}: {e}")
+
+        # Se não puder pular, processa o PDF normalmente
         print(f"Processando: {filename}")
         notas = process_pdf(pdf_path)
         print(f"  -> {len(notas)} notas extraidas")
@@ -388,7 +466,7 @@ def main():
     for (ano, mes), lst in sorted(notas_por_mes.items()):
         print(f"  {MESES_PT.get(mes, mes)}/{ano}: {len(lst)} notas")
 
-    # Gera uma planilha por ano encontrado
+    # Gera/Atualiza as planilhas por ano encontrado
     for ano in sorted(anos):
         output_path = os.path.join(script_dir, f"notas_corretagem_{ano}.xlsx")
         save_to_excel(notas_por_mes, ano, output_path)
